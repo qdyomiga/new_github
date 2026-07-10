@@ -1,0 +1,15 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+registered_account.txt
+success.png
+error_*.png
+captcha_solve_debug/
+captcha_images/
+artifact_captcha_jpg/
+all_screenshots/
+all_accounts/
+flat_screenshots/
+*.zip

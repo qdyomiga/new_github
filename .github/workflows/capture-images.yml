@@ -1,0 +1,125 @@
+﻿name: FunCaptcha image capture dataset
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "parallel capture count (1-256)"
+        required: false
+        default: "32"
+      max_submits:
+        description: "random submit clicks per captcha"
+        required: false
+        default: "12"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      indices: ${{ steps.gen.outputs.indices }}
+    steps:
+      - name: Generate matrix
+        id: gen
+        run: |
+          N=${{ github.event.inputs.count }}
+          N=${N:-1}
+          if [ "$N" -gt 256 ]; then N=256; fi
+          indices=$(python3 -ESs -c 'import json,sys; n=int(sys.argv[1]); print(json.dumps(list(range(1, n+1))))' "$N")
+          echo "indices=$indices" >> $GITHUB_OUTPUT
+          echo "matrix size: $N"
+
+  capture:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        index: ${{ fromJson(needs.prepare.outputs.indices) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Cache CloakBrowser binary
+        uses: actions/cache@v5
+        with:
+          path: ~/.cloakbrowser
+          key: cloakbrowser-${{ runner.os }}-v1
+
+      - name: Cache pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-v4
+
+      - name: Install dependencies
+        run: |
+          pip install cloakbrowser websocket-client requests
+          python -m cloakbrowser install
+
+      - name: Capture FunCaptcha images
+        env:
+          PYTHONUNBUFFERED: "1"
+          MATRIX_INDEX: "${{ matrix.index }}"
+          CAPTCHA_RANDOM_SUBMITS: "${{ github.event.inputs.max_submits }}"
+          CAPTCHA_OUTPUT_DIR: "captcha_images"
+        run: python register_capture_images.py
+
+      - name: Stage wanted captcha jpg only
+        if: always()
+        run: |
+          mkdir -p artifact_captcha_jpg
+          count=0
+          for f in captcha_images/captcha*.jpg; do
+            [ -f "$f" ] || continue
+            cp "$f" "artifact_captcha_jpg/run_${{ matrix.index }}_$(basename "$f")"
+            count=$((count + 1))
+          done
+          echo "wanted captcha jpg count: $count"
+          find artifact_captcha_jpg -type f -name 'captcha*.jpg' -o -name 'run_*_captcha*.jpg' | sort || true
+
+      - name: Upload per-run captcha jpg only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captcha-jpg-${{ matrix.index }}
+          path: artifact_captcha_jpg/*.jpg
+          if-no-files-found: ignore
+
+  collect:
+    needs: capture
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download captcha jpg artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: captcha-jpg-*
+          path: all_captcha_jpg_artifacts
+          merge-multiple: false
+
+      - name: Repack wanted jpg dataset only
+        run: |
+          mkdir -p filtered_captcha_jpg
+          count=0
+          while IFS= read -r f; do
+            base=$(basename "$f")
+            parent=$(basename "$(dirname "$f")")
+            cp "$f" "filtered_captcha_jpg/${parent}_${base}"
+            count=$((count + 1))
+          done < <(find all_captcha_jpg_artifacts -type f -name '*.jpg' | sort)
+          echo "final captcha jpg count: $count"
+          zip -r all-captcha-jpg-dataset.zip filtered_captcha_jpg || true
+
+      - name: Upload combined jpg dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-captcha-jpg-dataset
+          path: all-captcha-jpg-dataset.zip
+          if-no-files-found: error

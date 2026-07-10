@@ -1,0 +1,4 @@
+﻿cloakbrowser
+websocket-client
+requests
+-r yolo/requirements.txt
