@@ -512,6 +512,7 @@ def main() -> int:
     )
 
     original_browser = solver_browser = None
+    original_image_records = solver_image_records = 0
     blob_catcher = original_img = solver_blob = solver_img = None
     try:
         # create_cloak_browser 与 register.py 一致，固定 original CDP 端口 9222/headless。
@@ -539,6 +540,29 @@ def main() -> int:
         public_ctx = {**ctx, "blobLength": len(blob), "blobCapturedBeforeVerify": bool(blob_before_verify)}
         write_json(out / "original_arkose_context.json", public_ctx)
         save_cdp_images(original_img, str(out / "original_cdp_images"), prefix="original_captcha")
+        original_image_records = len(original_img.captured_images) if original_img else 0
+
+        # CloakBrowser's sync launch() owns a Playwright instance per browser and
+        # starts Playwright's sync dispatcher loop. Launching a second CloakBrowser
+        # before closing the first one can fail with:
+        # "It looks like you are using Playwright Sync API inside the asyncio loop."
+        # The original page is no longer needed after the blob/context/images are
+        # captured, so release it before starting the independent solver browser.
+        for c in (blob_catcher, original_img):
+            try:
+                if c:
+                    c.stop()
+            except Exception:
+                pass
+        blob_catcher = original_img = None
+        try:
+            if original_browser:
+                original_browser.close()
+                logger.info("original browser closed before launching solver browser")
+        except Exception as exc:
+            logger.warning("original browser close before solver failed: %s: %s", type(exc).__name__, exc)
+        finally:
+            original_browser = None
 
         logger.info("launch solver browser: port=%s headless=%s", SOLVER_PORT, headless)
         solver_browser, _, solver_page = create_solver_browser(ctx.get("userAgent"), headless=headless)
@@ -556,6 +580,7 @@ def main() -> int:
 
         solver_result = click_verify_and_snapshot(solver_page, solver_img, out, "solver", wait_timeout)
         save_cdp_images(solver_img, str(out / "solver_cdp_images"), prefix="solver_captcha")
+        solver_image_records = len(solver_img.captured_images) if solver_img else 0
 
         write_json(
             out / "summary.json",
@@ -567,8 +592,8 @@ def main() -> int:
                 "blobLength": len(blob),
                 "original": original_result,
                 "solver": solver_result,
-                "originalImageRecords": len(original_img.captured_images) if original_img else 0,
-                "solverImageRecords": len(solver_img.captured_images) if solver_img else 0,
+                "originalImageRecords": original_image_records,
+                "solverImageRecords": solver_image_records,
             },
         )
         logger.info("done: %s", out.resolve())
