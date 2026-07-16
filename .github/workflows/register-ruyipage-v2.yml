@@ -332,7 +332,7 @@ jobs:
 
       - name: Upload screenshots and debug data
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ruyi-v2-reg-data-${{ matrix.index }}
           path: |
@@ -342,7 +342,7 @@ jobs:
 
       - name: Upload account data
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ruyi-v2-reg-accounts-${{ matrix.index }}
           path: registered_account.txt
@@ -355,7 +355,7 @@ jobs:
     steps:
       - name: Download all account artifacts
         continue-on-error: true
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: ruyi-v2-reg-accounts-*
           path: all_accounts
@@ -378,7 +378,7 @@ jobs:
           PY
 
       - name: Upload merged account data
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: all-ruyipage-v2-registered-accounts
           path: all_accounts.txt

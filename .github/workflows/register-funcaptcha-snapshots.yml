@@ -219,7 +219,7 @@ jobs:
 
       - name: Upload solver captcha images
         if: ${{ always() && github.event.inputs.artifact_mode != 'full_debug' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: funcaptcha-solver-captcha-${{ matrix.index }}
           path: solver_captcha_images/*
@@ -227,7 +227,7 @@ jobs:
 
       - name: Upload two-browser screenshots/debug data
         if: ${{ always() && github.event.inputs.artifact_mode == 'full_debug' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: funcaptcha-two-browser-snapshot-${{ matrix.index }}
           path: |
@@ -243,7 +243,7 @@ jobs:
       - name: Download solver captcha artifacts
         if: ${{ github.event.inputs.artifact_mode != 'full_debug' }}
         continue-on-error: true
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: funcaptcha-solver-captcha-*
           path: all_solver_captcha_images
@@ -259,7 +259,7 @@ jobs:
 
       - name: Upload combined solver captcha images
         if: ${{ github.event.inputs.artifact_mode != 'full_debug' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: all-funcaptcha-solver-captcha-images
           path: all-funcaptcha-solver-captcha-images.zip
@@ -267,7 +267,7 @@ jobs:
 
       - name: Download snapshot artifacts
         if: ${{ github.event.inputs.artifact_mode == 'full_debug' }}
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: funcaptcha-two-browser-snapshot-*
           path: all_funcaptcha_snapshots
@@ -282,7 +282,7 @@ jobs:
 
       - name: Upload combined snapshots
         if: ${{ github.event.inputs.artifact_mode == 'full_debug' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: all-funcaptcha-two-browser-snapshots
           path: all-funcaptcha-two-browser-snapshots.zip

@@ -86,7 +86,7 @@ jobs:
 
       - name: Upload per-run captcha jpg only
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: captcha-jpg-${{ matrix.index }}
           path: artifact_captcha_jpg/*.jpg
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download captcha jpg artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: captcha-jpg-*
           path: all_captcha_jpg_artifacts
@@ -118,7 +118,7 @@ jobs:
           zip -r all-captcha-jpg-dataset.zip filtered_captcha_jpg || true
 
       - name: Upload combined jpg dataset
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: all-captcha-jpg-dataset
           path: all-captcha-jpg-dataset.zip

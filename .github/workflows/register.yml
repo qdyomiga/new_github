@@ -201,7 +201,7 @@ jobs:
 
       - name: Upload screenshots/debug data
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: reg-data-${{ matrix.index }}
           path: |
@@ -212,7 +212,7 @@ jobs:
 
       - name: Upload account data
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: reg-accounts-${{ matrix.index }}
           path: registered_account.txt
@@ -224,7 +224,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all account artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: reg-accounts-*
           path: all_accounts
@@ -239,7 +239,7 @@ jobs:
           [ -s all_accounts.txt ] || echo "(no successful accounts)" > all_accounts.txt
 
       - name: Upload merged account data
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: all-registered-accounts
           path: all_accounts.txt
