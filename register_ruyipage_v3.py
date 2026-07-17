@@ -334,25 +334,14 @@ def challenge_support_details(question_text: str, size: Any) -> dict:
     }
 
 
-def wait_supported_challenge(
-    solver_tab: Any,
-    size: Any,
-    *,
-    timeout: float,
-    output_path: Path,
-) -> dict:
-    deadline = time.time() + max(0.0, float(timeout))
-    details = challenge_support_details("", size)
-    while True:
-        text = base.captcha_text(solver_tab)
-        details = challenge_support_details(text, size)
-        if details["supported"]:
-            base.write_json(output_path, details)
-            return details
-        if time.time() >= deadline:
-            base.write_json(output_path, details)
-            raise UnsupportedCaptchaQuestion(details)
-        time.sleep(0.25)
+def validate_configured_challenge(size: Any, *, output_path: Path) -> dict:
+    """Apply the same fixed classification question used by the V2 workflow."""
+    details = challenge_support_details(SUPPORTED_QUESTION, size)
+    details["questionSource"] = "configured-v2-compatible"
+    base.write_json(output_path, details)
+    if not details["supported"]:
+        raise UnsupportedCaptchaQuestion(details)
+    return details
 
 
 def rank_v11_endpoint(base_url: str, path: str) -> str:
@@ -1267,10 +1256,8 @@ def auto_solve_solver_tab(solver_tab: Any, catcher: RuyiArkoseImageCatcher, args
         if args.debug_screenshots:
             base.screenshot(solver_tab, out / "solver_screenshots" / f"wave_{wave:02d}_before_answer.png")
 
-        question_details = wait_supported_challenge(
-            solver_tab,
+        question_details = validate_configured_challenge(
             rec.get("size") or image_size(data),
-            timeout=args.question_timeout,
             output_path=images_dir / f"local_v11_wave_{wave:02d}_question.json",
         )
         answer, model_result = rank_v11_solve_image(
@@ -1345,7 +1332,6 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--proxy-workers", type=int, default=8)
     ap.add_argument("--rank-v11-url", default=os.environ.get("RANK_V11_URL", DEFAULT_RANK_V11_URL))
     ap.add_argument("--rank-v11-timeout", type=float, default=120.0)
-    ap.add_argument("--question-timeout", type=float, default=8.0)
     ap.add_argument("--human-move-min-ms", type=int, default=1000, help="--click-style human 时每次点击轨迹最短毫秒")
     ap.add_argument("--human-move-max-ms", type=int, default=2000, help="--click-style human 时每次点击轨迹最长毫秒")
     ap.add_argument("--max-waves", type=int, default=8)
@@ -1389,7 +1375,7 @@ def main() -> int:
 
     LOG.info("输出目录: %s", out.resolve())
     LOG.info("架构: 原注册标签 -> 同浏览器求解标签 -> 本地 V11 解图 -> token 注入")
-    LOG.info("唯一支持题型: %r", SUPPORTED_QUESTION)
+    LOG.info("本地固定 classification question（与 V2 一致）: %r", SUPPORTED_QUESTION)
     LOG.info(
         "Click style: %s, human_move=%s-%sms, debug_screenshots=%s, after_submit_token_wait=%.1fs",
         args.click_style,

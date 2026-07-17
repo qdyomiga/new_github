@@ -52,34 +52,31 @@ def test_unsupported_question_or_layout_is_rejected(
     assert details["sizeMatched"] is size_matched
 
 
-def test_wait_supported_challenge_writes_evidence(tmp_path, monkeypatch):
+def test_configured_challenge_uses_v2_question_and_writes_evidence(tmp_path):
     output = tmp_path / "question.json"
-    monkeypatch.setattr(
-        app.base,
-        "captcha_text",
-        lambda _tab: f"Arkose prompt: {app.SUPPORTED_QUESTION}",
-    )
 
-    details = app.wait_supported_challenge(
-        object(), (2000, 400), timeout=0, output_path=output
+    details = app.validate_configured_challenge(
+        (2000, 400), output_path=output
     )
 
     assert details["supported"] is True
+    assert details["questionMatched"] is True
+    assert details["questionSource"] == "configured-v2-compatible"
     assert output.is_file()
     assert app.SUPPORTED_QUESTION in output.read_text(encoding="utf-8")
 
 
-def test_wait_unsupported_challenge_raises_and_writes_evidence(tmp_path, monkeypatch):
+def test_configured_challenge_rejects_unsupported_image_layout(tmp_path):
     output = tmp_path / "question.json"
-    monkeypatch.setattr(app.base, "captcha_text", lambda _tab: "different challenge")
 
     with pytest.raises(app.UnsupportedCaptchaQuestion) as raised:
-        app.wait_supported_challenge(
-            object(), (2000, 400), timeout=0, output_path=output
+        app.validate_configured_challenge(
+            (1200, 400), output_path=output
         )
 
     assert app.UNSUPPORTED_CAPTCHA_EXIT_CODE == 42
-    assert raised.value.details["questionMatched"] is False
+    assert raised.value.details["questionMatched"] is True
+    assert raised.value.details["sizeMatched"] is False
     assert output.is_file()
 
 
