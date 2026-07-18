@@ -114,6 +114,19 @@ def test_country_probe_is_default_and_can_only_be_disabled_explicitly():
     assert parser.parse_args(["--no-country-probe"]).country_probe is False
 
 
+def test_public_static_optimizer_is_enabled_by_default_and_can_be_disabled(tmp_path):
+    parser = app.build_parser()
+
+    default = parser.parse_args(["--static-cache-dir", str(tmp_path)])
+    disabled = parser.parse_args(
+        ["--static-cache-dir", str(tmp_path), "--no-direct-public-static"]
+    )
+
+    assert default.no_direct_public_static is False
+    assert default.static_cache_max_entry_mib == 8.0
+    assert disabled.no_direct_public_static is True
+
+
 def test_low_traffic_filter_keeps_arkose_images_and_blocks_only_nonessential_assets():
     assert not app.should_block_resource(
         "https://blizzard-api.arkoselabs.com/rtig/image?challenge=0"

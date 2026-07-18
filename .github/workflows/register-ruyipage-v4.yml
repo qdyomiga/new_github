@@ -148,6 +148,15 @@ jobs:
           path: ~/.cache/ruyipage
           key: ruyipage-firefox-${{ runner.os }}-v1
 
+      - name: Restore V4 public static cache
+        id: public-static-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/v4_public_static
+          key: ruyipage-v4-public-static-v1-${{ github.run_id }}
+          restore-keys: |
+            ruyipage-v4-public-static-v1-
+
       - name: Repair missing cached dependencies
         if: steps.venv.outputs.cache-hit != 'true' || steps.ruyi-runtime.outputs.cache-hit != 'true'
         run: |
@@ -191,9 +200,11 @@ jobs:
         env:
           RANK_V11_URL: http://127.0.0.1:8765
           REGISTRATION_PROXY: ${{ inputs.proxy }}
+          V4_STATIC_CACHE_DIR: ${{ github.workspace }}/.cache/v4_public_static
           PYTHONUNBUFFERED: "1"
         run: |
           set +e
+          mkdir -p "$V4_STATIC_CACHE_DIR"
           if [ -n "$REGISTRATION_PROXY" ]; then
             echo "::add-mask::$REGISTRATION_PROXY"
           fi
@@ -205,6 +216,7 @@ jobs:
                 --proxy "$REGISTRATION_PROXY" \
                 --country-probe \
                 --click-style balanced \
+                --static-cache-dir "$V4_STATIC_CACHE_DIR" \
                 --rank-v11-url "$RANK_V11_URL"
             last_rc=$?
             echo "V4 attempt ${attempt}/3 exited with ${last_rc}"
@@ -221,6 +233,13 @@ jobs:
             fi
           done
           exit "$last_rc"
+
+      - name: Save refreshed V4 public static cache
+        if: always() && matrix.index == 1
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/v4_public_static
+          key: ruyipage-v4-public-static-v1-${{ github.run_id }}
 
       - name: Stop local V11 service
         if: always()

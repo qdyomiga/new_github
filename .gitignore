@@ -12,4 +12,6 @@ artifact_captcha_jpg/
 all_screenshots/
 all_accounts/
 flat_screenshots/
+.cache/v4_public_static/
+.pytest-tmp-*/
 *.zip

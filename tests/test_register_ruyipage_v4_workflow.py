@@ -62,13 +62,30 @@ def test_registration_uses_http_v4_ruyi_local_v11_and_optional_proxy():
     )
 
     assert "register_ruyipage_v4.py" in command
+    assert 'mkdir -p "$V4_STATIC_CACHE_DIR"' in command
     assert '--proxy "$REGISTRATION_PROXY"' in command
     assert "--country-probe" in command
     assert 'echo "::add-mask::$REGISTRATION_PROXY"' in command
     assert "--click-style balanced" in command
+    assert '--static-cache-dir "$V4_STATIC_CACHE_DIR"' in command
     assert "for attempt in 1 2 3" in command
     assert 'if [ "$last_rc" -eq 42 ]' in command
     assert step["env"]["REGISTRATION_PROXY"] == "${{ inputs.proxy }}"
+    assert step["env"]["V4_STATIC_CACHE_DIR"].endswith(
+        "/.cache/v4_public_static"
+    )
+
+
+def test_public_static_cache_is_restored_for_all_jobs_and_saved_once():
+    steps = register_steps()
+    restore = next(item for item in steps if item.get("name") == "Restore V4 public static cache")
+    save = next(item for item in steps if item.get("name") == "Save refreshed V4 public static cache")
+
+    assert restore["uses"] == "actions/cache/restore@v5"
+    assert restore["with"]["path"] == ".cache/v4_public_static"
+    assert "ruyipage-v4-public-static-v1-" in restore["with"]["restore-keys"]
+    assert save["uses"] == "actions/cache/save@v5"
+    assert "matrix.index == 1" in save["if"]
 
 
 def test_v11_starts_in_background_while_http_flow_begins():

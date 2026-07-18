@@ -29,6 +29,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from battle_protocol_flow_v4 import BattleProtocolClient, PersistentFlowState
 from proxy_traffic_meter import ProxyTrafficMeter
+from v4_browser_resource_optimizer import BrowserResourceOptimizer, MIB
 
 
 def _load_v3_solver_modules():
@@ -291,6 +292,52 @@ def write_proxy_traffic_report(out: Path, report: Mapping[str, Any]) -> None:
             write_json(summary_path, summary)
 
 
+def read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def write_browser_traffic_report(out: Path, report: Mapping[str, Any]) -> None:
+    clean_report = dict(report)
+    write_json(out / "browser_traffic.json", clean_report)
+    summary_path = out / "summary.json"
+    if summary_path.is_file():
+        summary = read_json_object(summary_path)
+        summary["browserTraffic"] = clean_report
+        write_json(summary_path, summary)
+
+
+def stop_browser_optimizer(
+    optimizer: BrowserResourceOptimizer,
+    out: Path,
+) -> dict[str, Any]:
+    try:
+        report = optimizer.stop()
+    except Exception as exc:
+        report = {
+            "enabled": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        LOG.warning("Browser traffic optimizer stop failed: %s", report["error"])
+    write_browser_traffic_report(out, report)
+    counts = dict(report.get("counts") or {})
+    byte_counts = dict(report.get("bytes") or {})
+    LOG.info(
+        "Browser traffic optimizer: directStatic=%.4f MiB cacheHit=%.4f MiB "
+        "estimatedProxyAvoided=%.4f MiB candidates=%s fallbacks=%s blocked=%s",
+        float(byte_counts.get("directStaticMiB") or 0.0),
+        float(byte_counts.get("cacheHitMiB") or 0.0),
+        float(byte_counts.get("estimatedProxyMiBAvoided") or 0.0),
+        int(counts.get("publicStaticCandidates") or 0),
+        int(counts.get("directStaticFallbacks") or 0),
+        int(counts.get("blockedRequests") or 0),
+    )
+    return report
+
+
 def public_arkose_context(value: Mapping[str, Any]) -> dict[str, Any]:
     blob = str(value.get("blob") or "")
     token = str(value.get("token") or "")
@@ -436,15 +483,33 @@ def solve_arkose_with_ruyi(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     page = None
     image_catcher = None
-    filter_started = False
+    optimizer = None
     current = dict(context)
     try:
         page = launch_ruyi_browser(args, proxy, runtime_proxy_url)
-        if not args.no_resource_blocking:
-            filter_started = install_low_traffic_filter(page)
         if not current.get("blob"):
             LOG.info("HTTP response had no blob; using the RuyiPage cookie-import fallback")
             current = recover_blob_with_ruyi(page, client, args, out)
+
+        optimizer = BrowserResourceOptimizer(
+            page,
+            Path(args.static_cache_dir),
+            proxy_enabled=proxy.enabled,
+            direct_public_static=(
+                proxy.enabled and not bool(args.no_direct_public_static)
+            ),
+            block_nonessential=not bool(args.no_resource_blocking),
+            fetch_timeout=args.static_fetch_timeout,
+            max_entry_bytes=max(1, int(args.static_cache_max_entry_mib * MIB)),
+            should_block=should_block_resource,
+        )
+        optimizer.start()
+        LOG.info(
+            "Browser traffic optimizer enabled: publicStaticDirect=%s cache=%s "
+            "sessionBound=proxy",
+            proxy.enabled and not bool(args.no_direct_public_static),
+            Path(args.static_cache_dir).expanduser().resolve(),
+        )
 
         blob = str(current.get("blob") or "")
         if not blob:
@@ -473,14 +538,19 @@ def solve_arkose_with_ruyi(
         )
         if not result.get("ok") or not result.get("token"):
             raise RuntimeError(str(result.get("error") or "local V11 solver returned no token"))
+        with contextlib.suppress(Exception):
+            image_catcher.stop()
+        image_catcher = None
+        result["browserTraffic"] = stop_browser_optimizer(optimizer, out)
+        optimizer = None
         return result, current
     finally:
         with contextlib.suppress(Exception):
             if image_catcher:
                 image_catcher.stop()
         with contextlib.suppress(Exception):
-            if filter_started and page:
-                page.intercept.stop()
+            if optimizer:
+                stop_browser_optimizer(optimizer, out)
         if args.keep_open and page is not None:
             with contextlib.suppress(EOFError):
                 input("Solver browser is open. Press Enter to close...")
@@ -531,6 +601,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--blob-timeout", type=float, default=35.0)
     parser.add_argument("--debug-screenshots", action="store_true")
     parser.add_argument("--no-resource-blocking", action="store_true")
+    parser.add_argument(
+        "--static-cache-dir",
+        default=os.environ.get(
+            "V4_STATIC_CACHE_DIR",
+            str(PROJECT_ROOT / ".cache" / "v4_public_static"),
+        ),
+        help="shared cache for strictly public Arkose static assets",
+    )
+    parser.add_argument(
+        "--no-direct-public-static",
+        action="store_true",
+        help="keep public static cache misses on the configured browser route",
+    )
+    parser.add_argument("--static-fetch-timeout", type=float, default=8.0)
+    parser.add_argument("--static-cache-max-entry-mib", type=float, default=8.0)
     parser.add_argument(
         "--click-style",
         choices=("balanced", "fast", "human", "js"),
@@ -606,6 +691,10 @@ def main() -> int:
                     "countryProbe": bool(args.country_probe),
                     "proxy": proxy.summary(),
                     "proxyTrafficMeter": bool(proxy.enabled),
+                    "publicStaticDirect": bool(
+                        proxy.enabled and not args.no_direct_public_static
+                    ),
+                    "staticCacheDir": str(Path(args.static_cache_dir).expanduser()),
                     "protocolImpersonate": args.protocol_impersonate,
                 },
             )
@@ -614,6 +703,11 @@ def main() -> int:
         LOG.info("Flow: persistent HTTP -> RuyiPage -> local V11 -> HTTP captcha-gate")
         LOG.info("Registration country: %s (fixed)", REGISTRATION_COUNTRY)
         LOG.info("Proxy route: %s auth=%s", proxy.display, proxy.has_auth)
+        LOG.info(
+            "Public static route: %s; cache=%s",
+            "runner-direct" if proxy.enabled and not args.no_direct_public_static else "browser-route",
+            Path(args.static_cache_dir).expanduser().resolve(),
+        )
         LOG.info("Account: %s", identity["email"])
         LOG.info("BattleTag: %s", identity["battle_tag"])
 
@@ -728,6 +822,7 @@ def main() -> int:
                     "health": health,
                     "actions": solve_result.get("actions") or [],
                 },
+                "browserTraffic": solve_result.get("browserTraffic") or {},
                 "registration": registration,
                 "elapsedSeconds": time.perf_counter() - started,
             },
@@ -777,6 +872,9 @@ def main() -> int:
         if isinstance(exc, v3.UnsupportedCaptchaQuestion):
             failure["unsupportedCaptcha"] = True
             failure["challenge"] = exc.details
+        browser_traffic = read_json_object(out / "browser_traffic.json")
+        if browser_traffic:
+            failure["browserTraffic"] = browser_traffic
         write_json(out / "summary.json", failure)
         return (
             v3.UNSUPPORTED_CAPTCHA_EXIT_CODE
