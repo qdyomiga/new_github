@@ -24,6 +24,14 @@ Inputs:
 
 The same normalized proxy is used by the persistent HTTP session and RuyiPage. Proxy credentials are masked in the job log and are not written to summaries or artifacts.
 
+When a proxy is configured, V4 starts a local counting forwarder. Both the HTTP session and RuyiPage use that local endpoint, which then connects to the configured upstream proxy. At the end of every attempt the console prints upload, download, total MiB, connection count, and failures. Exact counters are stored in:
+
+```text
+ruyipage_http_v11_register/runs/run_*/proxy_traffic.json
+```
+
+The same object is added to `summary.json` as `proxyTraffic`. Counters include upstream proxy handshakes and tunneled TLS bytes, but not TCP/IP packet framing.
+
 Also accepted by the script:
 
 ```text

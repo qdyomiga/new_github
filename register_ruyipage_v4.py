@@ -28,6 +28,7 @@ from typing import Any, Mapping, Optional
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from battle_protocol_flow_v4 import BattleProtocolClient, PersistentFlowState
+from proxy_traffic_meter import ProxyTrafficMeter
 
 
 def _load_v3_solver_modules():
@@ -237,7 +238,11 @@ def install_low_traffic_filter(page: Any) -> bool:
         return False
 
 
-def launch_ruyi_browser(args: argparse.Namespace, proxy: ProxySettings):
+def launch_ruyi_browser(
+    args: argparse.Namespace,
+    proxy: ProxySettings,
+    runtime_proxy_url: Optional[str] = None,
+):
     """Use the V3 RuyiPage launch settings without logging proxy credentials."""
 
     LOG.info(
@@ -247,7 +252,7 @@ def launch_ruyi_browser(args: argparse.Namespace, proxy: ProxySettings):
     )
     page = base.ruyipage.launch(
         headless=bool(args.headless),
-        proxy=proxy.url,
+        proxy=runtime_proxy_url if runtime_proxy_url is not None else proxy.url,
         window_size=(1920, 1080),
         timeout_page_load=60,
         timeout_script=60,
@@ -270,6 +275,20 @@ def redact_proxy_text(value: Any, proxy: ProxySettings, raw_proxy: str = "") -> 
     for candidate in sorted(replacements, key=len, reverse=True):
         text = text.replace(candidate, proxy.display)
     return text
+
+
+def write_proxy_traffic_report(out: Path, report: Mapping[str, Any]) -> None:
+    clean_report = dict(report)
+    write_json(out / "proxy_traffic.json", clean_report)
+    summary_path = out / "summary.json"
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            summary = {}
+        if isinstance(summary, dict):
+            summary["proxyTraffic"] = clean_report
+            write_json(summary_path, summary)
 
 
 def public_arkose_context(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -413,13 +432,14 @@ def solve_arkose_with_ruyi(
     args: argparse.Namespace,
     proxy: ProxySettings,
     out: Path,
+    runtime_proxy_url: Optional[str] = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     page = None
     image_catcher = None
     filter_started = False
     current = dict(context)
     try:
-        page = launch_ruyi_browser(args, proxy)
+        page = launch_ruyi_browser(args, proxy, runtime_proxy_url)
         if not args.no_resource_blocking:
             filter_started = install_low_traffic_filter(page)
         if not current.get("blob"):
@@ -556,8 +576,11 @@ def main() -> int:
     setup_logging(out / "run.log")
 
     state: Optional[PersistentFlowState] = None
+    client: Optional[BattleProtocolClient] = None
     identity: dict[str, str] = {}
     proxy = ProxySettings(None, "direct")
+    traffic_meter: Optional[ProxyTrafficMeter] = None
+    runtime_proxy_url: Optional[str] = None
     started = time.perf_counter()
     try:
         proxy = parse_proxy(args.proxy)
@@ -582,6 +605,7 @@ def main() -> int:
                     "registrationCountry": REGISTRATION_COUNTRY,
                     "countryProbe": bool(args.country_probe),
                     "proxy": proxy.summary(),
+                    "proxyTrafficMeter": bool(proxy.enabled),
                     "protocolImpersonate": args.protocol_impersonate,
                 },
             )
@@ -600,11 +624,21 @@ def main() -> int:
             print(f"BattleTag: {identity.get('battle_tag', '')}")
             return 0
 
+        runtime_proxy_url = proxy.url
+        if proxy.enabled and proxy.url:
+            traffic_meter = ProxyTrafficMeter(proxy.url)
+            runtime_proxy_url = traffic_meter.start()
+            LOG.info(
+                "Proxy traffic meter started: local=%s upstream=%s",
+                runtime_proxy_url,
+                proxy.display,
+            )
+
         client = BattleProtocolClient(
             state,
             out,
             entry_url=args.entry_url,
-            proxy=proxy.url,
+            proxy=runtime_proxy_url,
             impersonate=args.protocol_impersonate,
             user_agent=args.protocol_user_agent or None,
             accept_language="en-GB,en;q=0.9",
@@ -653,7 +687,12 @@ def main() -> int:
                 float(health.get("warmup_seconds") or 0.0),
             )
             solve_result, arkose = solve_arkose_with_ruyi(
-                client, arkose, args, proxy, out
+                client,
+                arkose,
+                args,
+                proxy,
+                out,
+                runtime_proxy_url=runtime_proxy_url,
             )
             token = str(solve_result["token"])
             arkose["token"] = token
@@ -744,6 +783,24 @@ def main() -> int:
             if isinstance(exc, v3.UnsupportedCaptchaQuestion)
             else 1
         )
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.session.close()
+        if traffic_meter is not None:
+            with contextlib.suppress(Exception):
+                report = traffic_meter.stop()
+                write_proxy_traffic_report(out, report)
+                LOG.info(
+                    "Proxy traffic total: upload=%.4f MiB download=%.4f MiB "
+                    "total=%.4f MiB bytes=%s connections=%s failures=%s",
+                    float(report.get("uploadMiB") or 0.0),
+                    float(report.get("downloadMiB") or 0.0),
+                    float(report.get("totalMiB") or 0.0),
+                    int(report.get("totalBytes") or 0),
+                    int(report.get("connections") or 0),
+                    int(report.get("failures") or 0),
+                )
 
 
 if __name__ == "__main__":

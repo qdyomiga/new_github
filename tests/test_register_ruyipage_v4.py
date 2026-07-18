@@ -150,6 +150,26 @@ def test_protocol_success_metadata_is_authoritative():
 def test_main_returns_v11_token_to_original_http_session(tmp_path, monkeypatch):
     calls = {}
 
+    class FakeMeter:
+        def __init__(self, upstream_url):
+            calls["meter_upstream"] = upstream_url
+
+        def start(self):
+            return "http://127.0.0.1:43210"
+
+        def stop(self):
+            return {
+                "enabled": True,
+                "uploadBytes": 100,
+                "downloadBytes": 900,
+                "totalBytes": 1000,
+                "uploadMiB": 0.0001,
+                "downloadMiB": 0.0009,
+                "totalMiB": 0.001,
+                "connections": 2,
+                "failures": 0,
+            }
+
     class FakeClient:
         def __init__(self, state, output_dir, **kwargs):
             calls["client"] = kwargs
@@ -203,14 +223,17 @@ def test_main_returns_v11_token_to_original_http_session(tmp_path, monkeypatch):
         },
     )
 
-    def fake_solve(client, context, args, proxy, out):
-        calls["solver_proxy"] = proxy.url
+    def fake_solve(
+        client, context, args, proxy, out, runtime_proxy_url=None
+    ):
+        calls["solver_proxy"] = runtime_proxy_url
         return (
             {"ok": True, "token": "ARKOSE_TOKEN", "actions": [{"wave": 0}]},
             dict(context),
         )
 
     monkeypatch.setattr(app, "solve_arkose_with_ruyi", fake_solve)
+    monkeypatch.setattr(app, "ProxyTrafficMeter", FakeMeter)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -229,8 +252,9 @@ def test_main_returns_v11_token_to_original_http_session(tmp_path, monkeypatch):
         "opt_in": False,
         "country_probe": True,
     }
-    assert calls["client"]["proxy"] == "http://u:p@10.0.0.1:8080"
-    assert calls["solver_proxy"] == "http://u:p@10.0.0.1:8080"
+    assert calls["meter_upstream"] == "http://u:p@10.0.0.1:8080"
+    assert calls["client"]["proxy"] == "http://127.0.0.1:43210"
+    assert calls["solver_proxy"] == "http://127.0.0.1:43210"
     assert calls["submitted_token"] == "ARKOSE_TOKEN"
 
     run_dir = next(tmp_path.glob("run_*"))
@@ -240,6 +264,10 @@ def test_main_returns_v11_token_to_original_http_session(tmp_path, monkeypatch):
     assert summary["registrationCountry"] == "GBR"
     assert summary["countryProbe"] is True
     assert summary["proxy"]["hasAuth"] is True
+    assert summary["proxyTraffic"]["totalBytes"] == 1000
+    traffic = json.loads((run_dir / "proxy_traffic.json").read_text("utf-8"))
+    assert traffic["uploadBytes"] == 100
+    assert traffic["downloadBytes"] == 900
     assert "secret" not in json.dumps(summary)
 
 
