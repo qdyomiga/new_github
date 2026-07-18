@@ -341,12 +341,25 @@ def stop_browser_optimizer(
             "Direct static fallback reasons: %s",
             sorted(failures.items(), key=lambda item: item[1], reverse=True)[:5],
         )
-    for fallback in list(report.get("directFallbacks") or [])[:5]:
+    for fallback in list(report.get("directFallbacks") or [])[:10]:
         LOG.info(
             "Direct static fallback: hard=%s reason=%s url=%s",
             bool(fallback.get("hardFailure")),
             fallback.get("reason"),
             fallback.get("url"),
+        )
+    proxy_responses = [
+        item
+        for item in list(report.get("topResponses") or [])
+        if item.get("route") == "proxy"
+    ][:10]
+    for item in proxy_responses:
+        LOG.info(
+            "Proxy response: bytes=%s type=%s category=%s url=%s",
+            int(item.get("wireBodyBytesEstimate") or 0),
+            item.get("resourceType"),
+            item.get("category"),
+            item.get("url"),
         )
     return report
 

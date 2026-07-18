@@ -348,7 +348,11 @@ class StaticResponseCache:
             return None
 
     def put(self, url: str, response: CachedResponse) -> bool:
-        if not response.body or len(response.body) > self.max_entry_bytes:
+        if (
+            not response.body
+            or len(response.body) > self.max_entry_bytes
+            or response.expires_at <= time.time()
+        ):
             return False
         body_path, metadata_path = self._paths(url)
         nonce = f"{os.getpid()}.{threading.get_ident()}.{time.time_ns()}"
@@ -417,11 +421,37 @@ class DirectPublicStaticFetcher:
             normalized = _lower_headers(response.headers)
             if response.status_code != 200:
                 return FetchOutcome(None, f"status-{response.status_code}", time.perf_counter() - started)
-            lifetime = public_cache_lifetime(normalized)
-            if lifetime <= 0:
-                return FetchOutcome(None, "response-not-public-cacheable", time.perf_counter() - started)
             if not _allowed_content_type(normalized.get("content-type", ""), url):
                 return FetchOutcome(None, "unsupported-content-type", time.perf_counter() - started)
+            if "set-cookie" in normalized:
+                return FetchOutcome(None, "response-sets-cookie", time.perf_counter() - started)
+            vary_names = {
+                item.strip().lower()
+                for item in normalized.get("vary", "").split(",")
+                if item.strip()
+            }
+            if vary_names - _ALLOWED_VARY_HEADERS:
+                return FetchOutcome(None, "unsupported-vary", time.perf_counter() - started)
+
+            lifetime = public_cache_lifetime(normalized)
+            replay_only = lifetime <= 0
+            if replay_only:
+                cache_control = normalized.get("cache-control", "").lower()
+                if any(
+                    directive in cache_control
+                    for directive in ("private", "no-store", "no-cache")
+                ):
+                    return FetchOutcome(
+                        None,
+                        "response-forbids-storage",
+                        time.perf_counter() - started,
+                    )
+                if not (normalized.get("etag") or normalized.get("last-modified")):
+                    return FetchOutcome(
+                        None,
+                        "response-has-no-validator",
+                        time.perf_counter() - started,
+                    )
 
             chunks: list[bytes] = []
             total = 0
@@ -443,24 +473,23 @@ class DirectPublicStaticFetcher:
             }
             replay_headers.pop("content-encoding", None)
             replay_headers["content-length"] = str(len(body))
-            vary_names = {
-                item.strip().lower()
-                for item in normalized.get("vary", "").split(",")
-                if item.strip()
-            }
             cached = CachedResponse(
                 body=body,
                 headers=replay_headers,
                 status_code=200,
                 reason_phrase=str(response.reason or "OK"),
-                expires_at=time.time() + lifetime,
+                expires_at=(time.time() + lifetime) if not replay_only else 0.0,
                 vary_request_headers={
                     name: outgoing.get(name, "")
                     for name in vary_names
                     if name != "accept-encoding"
                 },
             )
-            return FetchOutcome(cached, "ok", time.perf_counter() - started)
+            return FetchOutcome(
+                cached,
+                "ok-replay-only" if replay_only else "ok",
+                time.perf_counter() - started,
+            )
         except requests.RequestException as exc:
             return FetchOutcome(
                 None,
@@ -572,7 +601,7 @@ class BrowserResourceOptimizer:
                 outcome = self.fetcher.fetch(url, request_headers)
                 cached = outcome.response
                 route = "direct-public-static"
-                if cached is not None:
+                if cached is not None and cached.expires_at > time.time():
                     self.cache.put(url, cached)
 
             if cached is not None:
@@ -602,6 +631,11 @@ class BrowserResourceOptimizer:
                         self._bytes["cacheHitBytes"] += len(cached.body)
                     else:
                         self._counts["directStaticFetches"] += 1
+                        if outcome and outcome.reason == "ok-replay-only":
+                            self._counts["directStaticReplayOnly"] += 1
+                            self._bytes["directStaticReplayOnlyBytes"] += len(
+                                cached.body
+                            )
                         self._bytes["directStaticBytes"] += len(cached.body)
                         self._bytes["directStaticFetchMillis"] += int(
                             1000 * float(outcome.elapsed_seconds if outcome else 0.0)

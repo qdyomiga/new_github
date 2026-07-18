@@ -154,6 +154,33 @@ def test_direct_public_response_is_mocked_then_reused_from_disk_cache(tmp_path):
     assert report["bytes"]["estimatedProxyBytesAvoided"] == 44
 
 
+def test_replay_only_response_is_never_persisted(tmp_path):
+    payload = CachedResponse(
+        body=b"window.replayOnly = true;",
+        headers={
+            "content-type": "application/javascript",
+            "etag": '"fixture"',
+        },
+        expires_at=0.0,
+    )
+
+    class ReplayFetcher(FakeFetcher):
+        def fetch(self, url, headers):
+            self.calls.append((url, dict(headers)))
+            return FetchOutcome(self.response, "ok-replay-only", 0.01)
+
+    fetcher = ReplayFetcher(payload)
+    app = optimizer(tmp_path, fetcher)
+    app._handle_request(FakeRequest(PUBLIC_ASSET, request_id="first"))
+    app._handle_request(FakeRequest(PUBLIC_ASSET, request_id="second"))
+
+    assert len(fetcher.calls) == 2
+    report = app.report()
+    assert report["counts"]["directStaticReplayOnly"] == 2
+    assert report["counts"].get("cacheHits", 0) == 0
+    assert list(tmp_path.glob("*.bin")) == []
+
+
 def test_disk_cache_does_not_cross_origin_variants(tmp_path):
     cache = StaticResponseCache(tmp_path)
     payload = CachedResponse(
@@ -324,7 +351,10 @@ def test_direct_fetcher_ignores_environment_proxy(tmp_path, monkeypatch):
         def do_GET(self):
             self.send_response(200)
             self.send_header("Content-Type", "application/javascript")
-            self.send_header("Cache-Control", "public, max-age=3600")
+            if self.path == "/asset.js":
+                self.send_header("Cache-Control", "public, max-age=3600")
+            elif self.path == "/validator.js":
+                self.send_header("ETag", '"validator-fixture"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -344,6 +374,14 @@ def test_direct_fetcher_ignores_environment_proxy(tmp_path, monkeypatch):
             f"http://127.0.0.1:{server.server_port}/asset.js",
             {"User-Agent": "Firefox/Test"},
         )
+        replay_only = fetcher.fetch(
+            f"http://127.0.0.1:{server.server_port}/validator.js",
+            {"User-Agent": "Firefox/Test"},
+        )
+        rejected = fetcher.fetch(
+            f"http://127.0.0.1:{server.server_port}/no-validator.js",
+            {"User-Agent": "Firefox/Test"},
+        )
     finally:
         fetcher.close()
         server.shutdown()
@@ -354,3 +392,8 @@ def test_direct_fetcher_ignores_environment_proxy(tmp_path, monkeypatch):
     assert outcome.reason == "ok"
     assert outcome.response is not None
     assert outcome.response.body == body
+    assert replay_only.reason == "ok-replay-only"
+    assert replay_only.response is not None
+    assert replay_only.response.expires_at == 0.0
+    assert rejected.reason == "response-has-no-validator"
+    assert rejected.response is None
