@@ -47,6 +47,8 @@ DEFAULT_TWOCAPTCHA_CREATE_URL = "https://api.2captcha.com/createTask"
 DEFAULT_TWOCAPTCHA_RESULT_URL = "https://api.2captcha.com/getTaskResult"
 DEFAULT_SOLVECAPTCHA_CREATE_URL = "https://api.solvecaptcha.com/in.php"
 DEFAULT_SOLVECAPTCHA_RESULT_URL = "https://api.solvecaptcha.com/res.php"
+DEFAULT_EZCAPTCHA_CREATE_URL = "https://api.ez-captcha.com/createTask"
+DEFAULT_EZCAPTCHA_RESULT_URL = "https://api.ez-captcha.com/getTaskResult"
 DEFAULT_PROXY_DIRECT_HOSTS = (
     "blz-contentstack-assets.akamaized.net",
     "forge.akamaized.net",
@@ -353,7 +355,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--solver",
-        choices=("v11", "yescaptcha", "capmonster", "twocaptcha", "solvecaptcha"),
+        choices=(
+            "v11",
+            "yescaptcha",
+            "capmonster",
+            "twocaptcha",
+            "solvecaptcha",
+            "ezcaptcha",
+        ),
         default=os.environ.get("V5_SOLVER", "v11").lower(),
     )
     parser.add_argument(
@@ -472,6 +481,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--solvecaptcha-timeout", type=float, default=300.0)
     parser.add_argument("--solvecaptcha-poll-interval", type=float, default=5.0)
     parser.add_argument(
+        "--ezcaptcha-key", default=os.environ.get("EZCAPTCHA_API_KEY", "")
+    )
+    parser.add_argument(
+        "--ezcaptcha-create-url", default=DEFAULT_EZCAPTCHA_CREATE_URL
+    )
+    parser.add_argument(
+        "--ezcaptcha-result-url", default=DEFAULT_EZCAPTCHA_RESULT_URL
+    )
+    parser.add_argument("--ezcaptcha-timeout", type=float, default=300.0)
+    parser.add_argument("--ezcaptcha-poll-interval", type=float, default=5.0)
+    parser.add_argument(
         "--proxy-direct-hosts",
         default=os.environ.get(
             "V5_PROXY_DIRECT_HOSTS",
@@ -510,12 +530,18 @@ def validate_configuration(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "选择 SolveCaptcha 求解时必须提供 SOLVECAPTCHA_API_KEY"
         )
+    if args.solver == "ezcaptcha" and not str(args.ezcaptcha_key).strip():
+        raise ValueError(
+            "选择 EzCaptcha 求解时必须提供 EZCAPTCHA_API_KEY"
+        )
     if args.capmonster_poll_interval <= 0 or args.capmonster_timeout <= 0:
         raise ValueError("CapMonster 轮询间隔和超时时间必须为正数")
     if args.twocaptcha_poll_interval <= 0 or args.twocaptcha_timeout <= 0:
         raise ValueError("2Captcha 轮询间隔和超时时间必须为正数")
     if args.solvecaptcha_poll_interval <= 0 or args.solvecaptcha_timeout <= 0:
         raise ValueError("SolveCaptcha 轮询间隔和超时时间必须为正数")
+    if args.ezcaptcha_poll_interval <= 0 or args.ezcaptcha_timeout <= 0:
+        raise ValueError("EzCaptcha 轮询间隔和超时时间必须为正数")
     if args.yescaptcha_timeout <= 0:
         raise ValueError("YesCaptcha 超时时间必须为正数")
     if args.email_source == "pool" and int(args.email_pool_index) < 1:
@@ -538,7 +564,12 @@ def validate_configuration(args: argparse.Namespace) -> dict[str, Any]:
         "proxyDirectHosts": list(proxy_direct_hosts),
         "capmonsterProxyMode": (
             args.capmonster_proxy_mode
-            if args.solver in {"capmonster", "twocaptcha", "solvecaptcha"}
+            if args.solver in {
+                "capmonster",
+                "twocaptcha",
+                "solvecaptcha",
+                "ezcaptcha",
+            }
             else "not-applicable"
         ),
         "apiKeyConfigured": (
@@ -554,7 +585,11 @@ def validate_configuration(args: argparse.Namespace) -> dict[str, Any]:
                         else (
                             args.twocaptcha_key
                             if args.solver == "twocaptcha"
-                            else args.solvecaptcha_key
+                            else (
+                                args.solvecaptcha_key
+                                if args.solver == "solvecaptcha"
+                                else args.ezcaptcha_key
+                            )
                         )
                     )
                 ).strip()
@@ -886,6 +921,256 @@ def solve_with_solvecaptcha(
     )
     raise TimeoutError(
         f"SolveCaptcha 任务 {task_id} 在 {args.solvecaptcha_timeout} 秒后超时"
+    )
+
+
+def _ezcaptcha_proxy_value(proxy: v4.ProxySettings) -> str:
+    """Convert a route to EzCaptcha's ``scheme:host:port:user:password`` form."""
+
+    if not proxy.enabled:
+        return ""
+    parsed = urlsplit(str(proxy.url or ""))
+    proxy_type = str(proxy.scheme or parsed.scheme or "http").lower()
+    if proxy_type == "socks5h":
+        proxy_type = "socks5"
+    if proxy_type not in {"http", "https", "socks4", "socks5"}:
+        raise ValueError(f"EzCaptcha 不支持此代理协议: {proxy_type}")
+    address = str(proxy.host or parsed.hostname or "").strip()
+    port = int(proxy.port or parsed.port or 0)
+    if not address or not 1 <= port <= 65535:
+        raise ValueError("所选代理没有有效的地址和端口")
+    value = f"{proxy_type}:{address}:{port}"
+    if parsed.username is not None:
+        value += f":{unquote(parsed.username)}:{unquote(parsed.password or '')}"
+    return value
+
+
+def solve_with_ezcaptcha(
+    context: Mapping[str, Any],
+    args: argparse.Namespace,
+    out: Path,
+    proxy: v4.ProxySettings,
+) -> dict[str, Any]:
+    """Create and poll an EzCaptcha Arkose Labs FunCaptcha task."""
+
+    solver_started = time.perf_counter()
+    blob = str(context.get("blob") or "")
+    site_key = str(context.get("siteKey") or v4.DEFAULT_SITE_KEY)
+    surl = str(context.get("surl") or v4.DEFAULT_SURL)
+    website_url = str(context.get("websiteURL") or args.entry_url)
+    requested_proxy = str(args.capmonster_proxy_mode).lower() == "proxy"
+    use_proxy = requested_proxy and proxy.enabled
+    surl_host = _diagnostic_host(surl)
+    task: dict[str, Any] = {
+        "type": "FuncaptchaTaskProxyless",
+        "websiteURL": website_url,
+        "websiteKey": site_key,
+    }
+    if blob:
+        task["data"] = json.dumps({"blob": blob}, separators=(",", ":"))
+    if surl_host and surl_host != "client-api.arkoselabs.com":
+        task["funcaptchaApiJSSubdomain"] = surl_host
+    task_mode = "proxy" if use_proxy else "proxyless"
+    if use_proxy:
+        task["proxy"] = _ezcaptcha_proxy_value(proxy)
+
+    LOG.info(
+        "EzCaptcha 任务：类型=%s，模式=%s，线路=%s",
+        task["type"],
+        task_mode,
+        proxy.display if use_proxy else "EzCaptcha 自身网络",
+    )
+    _diagnostic_event(
+        out,
+        "ezcaptcha_create_start",
+        solver_started,
+        solver="ezcaptcha",
+        taskType=task["type"],
+        proxyMode=task_mode,
+        proxyConfigured=bool(use_proxy),
+        blobLength=len(blob),
+        blobSha256=_diagnostic_digest(blob),
+        siteKeySha256=_diagnostic_digest(site_key),
+        surlHost=surl_host,
+        websiteHost=_diagnostic_host(website_url),
+    )
+
+    session = requests.Session()
+    session.headers.update({"Content-Type": "application/json"})
+    client_key = str(args.ezcaptcha_key).strip()
+    try:
+        create_response = session.post(
+            args.ezcaptcha_create_url,
+            json={"clientKey": client_key, "task": task},
+            timeout=20,
+        )
+        create_response.raise_for_status()
+        created = create_response.json()
+    except Exception as exc:
+        _diagnostic_event(
+            out,
+            "ezcaptcha_create_error",
+            solver_started,
+            solver="ezcaptcha",
+            errorType=type(exc).__name__,
+        )
+        raise
+    if not isinstance(created, Mapping):
+        raise RuntimeError("EzCaptcha 创建任务返回了非对象 JSON")
+    created = dict(created)
+    write_json(
+        out / "ezcaptcha_create_response.json",
+        _redacted_provider_response(created),
+    )
+    error_id = int(created.get("errorId") or 0)
+    task_id = str(created.get("taskId") or "").strip()
+    _diagnostic_event(
+        out,
+        "ezcaptcha_create_response",
+        solver_started,
+        solver="ezcaptcha",
+        httpStatus=int(create_response.status_code),
+        providerErrorId=error_id,
+        hasTaskId=bool(task_id),
+        responseKeys=sorted(str(key) for key in created.keys()),
+    )
+    if error_id or not task_id:
+        _diagnostic_event(
+            out,
+            "ezcaptcha_create_failed",
+            solver_started,
+            solver="ezcaptcha",
+            providerErrorId=error_id,
+            errorCodePresent=bool(created.get("errorCode")),
+        )
+        raise RuntimeError(
+            f"EzCaptcha 创建任务失败：错误代码={created.get('errorCode')}，"
+            f"错误说明={created.get('errorDescription')}"
+        )
+    LOG.info("EzCaptcha 任务已创建，blob 长度=%s", len(blob))
+
+    deadline = time.monotonic() + float(args.ezcaptcha_timeout)
+    polls = 0
+    last: dict[str, Any] = {}
+    last_status = ""
+    while time.monotonic() < deadline:
+        polls += 1
+        try:
+            result_response = session.post(
+                args.ezcaptcha_result_url,
+                json={"clientKey": client_key, "taskId": task_id},
+                timeout=15,
+            )
+            result_response.raise_for_status()
+            payload = result_response.json()
+        except Exception as exc:
+            _diagnostic_event(
+                out,
+                "ezcaptcha_poll_error",
+                solver_started,
+                solver="ezcaptcha",
+                poll=polls,
+                errorType=type(exc).__name__,
+            )
+            raise
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("EzCaptcha 轮询返回了非对象 JSON")
+        last = dict(payload)
+        status = str(last.get("status") or "").lower()
+        error_id = int(last.get("errorId") or 0)
+        if status != last_status or polls == 1 or polls % 10 == 0:
+            _diagnostic_event(
+                out,
+                "ezcaptcha_poll",
+                solver_started,
+                solver="ezcaptcha",
+                poll=polls,
+                httpStatus=int(result_response.status_code),
+                providerStatus=status,
+                providerErrorId=error_id,
+            )
+            last_status = status
+        if error_id or status == "error":
+            write_json(
+                out / "ezcaptcha_result.json",
+                _redacted_provider_response(last),
+            )
+            _diagnostic_event(
+                out,
+                "ezcaptcha_failed",
+                solver_started,
+                solver="ezcaptcha",
+                poll=polls,
+                providerStatus=status,
+                providerErrorId=error_id,
+                errorCodePresent=bool(last.get("errorCode")),
+            )
+            raise RuntimeError(
+                f"EzCaptcha 任务失败：错误代码={last.get('errorCode')}，"
+                f"错误说明={last.get('errorDescription')}"
+            )
+        if status == "ready":
+            solution = last.get("solution")
+            token = str(
+                solution.get("token")
+                if isinstance(solution, Mapping)
+                else ""
+            ).strip()
+            write_json(
+                out / "ezcaptcha_result.json",
+                _redacted_provider_response(last),
+            )
+            if not token:
+                _diagnostic_event(
+                    out,
+                    "ezcaptcha_ready_without_token",
+                    solver_started,
+                    solver="ezcaptcha",
+                    poll=polls,
+                )
+                raise RuntimeError("EzCaptcha 已返回 ready，但缺少 solution.token")
+            _diagnostic_event(
+                out,
+                "ezcaptcha_ready",
+                solver_started,
+                solver="ezcaptcha",
+                poll=polls,
+                tokenPresent=True,
+                tokenLength=len(token),
+                tokenSha256=_diagnostic_digest(token),
+            )
+            return {
+                "ok": True,
+                "token": token,
+                "actions": [],
+                "provider": "ezcaptcha",
+                "taskType": task["type"],
+                "proxyMode": task_mode,
+                "proxyModeRequested": args.capmonster_proxy_mode,
+                "taskId": task_id,
+                "polls": polls,
+            }
+        if status not in {"", "processing"}:
+            write_json(
+                out / "ezcaptcha_result.json",
+                _redacted_provider_response(last),
+            )
+            raise RuntimeError(f"EzCaptcha 返回未知状态：{status}")
+        time.sleep(float(args.ezcaptcha_poll_interval))
+    write_json(
+        out / "ezcaptcha_result.json",
+        _redacted_provider_response(last),
+    )
+    _diagnostic_event(
+        out,
+        "ezcaptcha_timeout",
+        solver_started,
+        solver="ezcaptcha",
+        poll=polls,
+        lastProviderStatus=str(last.get("status") or ""),
+    )
+    raise TimeoutError(
+        f"EzCaptcha 任务 {task_id} 在 {args.ezcaptcha_timeout} 秒后超时"
     )
 
 
@@ -2272,7 +2557,12 @@ def main() -> int:
             resumedToken=bool(token),
             capmonsterProxyMode=(
                 args.capmonster_proxy_mode
-                if args.solver in {"capmonster", "twocaptcha", "solvecaptcha"}
+                if args.solver in {
+                    "capmonster",
+                    "twocaptcha",
+                    "solvecaptcha",
+                    "ezcaptcha",
+                }
                 else "not-applicable"
             ),
         )
@@ -2296,6 +2586,10 @@ def main() -> int:
             elif args.solver == "solvecaptcha":
                 health = {"ok": True, "status": "external-provider"}
                 solve_result = solve_with_solvecaptcha(arkose, args, out, proxy)
+                token = str(solve_result["token"])
+            elif args.solver == "ezcaptcha":
+                health = {"ok": True, "status": "external-provider"}
+                solve_result = solve_with_ezcaptcha(arkose, args, out, proxy)
                 token = str(solve_result["token"])
             else:
                 if args.solver == "v11":
@@ -2529,12 +2823,22 @@ def main() -> int:
                         solve_result.get("proxyMode")
                         or args.capmonster_proxy_mode
                     )
-                    if args.solver in {"capmonster", "twocaptcha", "solvecaptcha"}
+                    if args.solver in {
+                        "capmonster",
+                        "twocaptcha",
+                        "solvecaptcha",
+                        "ezcaptcha",
+                    }
                     else "not-applicable"
                 ),
                 "capmonsterProxyModeRequested": (
                     args.capmonster_proxy_mode
-                    if args.solver in {"capmonster", "twocaptcha", "solvecaptcha"}
+                    if args.solver in {
+                        "capmonster",
+                        "twocaptcha",
+                        "solvecaptcha",
+                        "ezcaptcha",
+                    }
                     else "not-applicable"
                 ),
                 "capmonsterUserAgent": capmonster_user_agent_info,

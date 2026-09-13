@@ -29,6 +29,7 @@ on:
           - "CapMonster"
           - "2Captcha"
           - "SolveCaptcha"
+          - "EzCaptcha"
       yescaptcha_key:
         description: "YesCaptcha 密钥（已配置仓库 Secret 时留空）"
         required: false
@@ -46,6 +47,11 @@ on:
         type: string
       solvecaptcha_key:
         description: "SolveCaptcha 密钥（已配置仓库 Secret 时留空）"
+        required: false
+        default: ""
+        type: string
+      ezcaptcha_key:
+        description: "EzCaptcha 密钥（已配置仓库 Secret 时留空）"
         required: false
         default: ""
         type: string
@@ -138,6 +144,7 @@ jobs:
           CAPMONSTER_API_KEY: ${{ secrets.CAPMONSTER_API_KEY || inputs.capmonster_key }}
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY || inputs.twocaptcha_key }}
           SOLVECAPTCHA_API_KEY: ${{ secrets.SOLVECAPTCHA_API_KEY || inputs.solvecaptcha_key }}
+          EZCAPTCHA_API_KEY: ${{ secrets.EZCAPTCHA_API_KEY || inputs.ezcaptcha_key }}
         run: |
           python3 - <<'PY'
           import json
@@ -200,6 +207,7 @@ jobs:
               "CapMonster": "capmonster",
               "2Captcha": "twocaptcha",
               "SolveCaptcha": "solvecaptcha",
+              "EzCaptcha": "ezcaptcha",
           }
           browser_map = {"RuyiPage": "ruyipage", "CloakBrowser": "cloakbrowser"}
           network_map = {"直连": "direct", "代理": "proxy"}
@@ -221,11 +229,13 @@ jobs:
           capmonster_key = os.environ.get("CAPMONSTER_API_KEY", "").strip()
           twocaptcha_key = os.environ.get("TWOCAPTCHA_API_KEY", "").strip()
           solvecaptcha_key = os.environ.get("SOLVECAPTCHA_API_KEY", "").strip()
+          ezcaptcha_key = os.environ.get("EZCAPTCHA_API_KEY", "").strip()
           for value in (
               yescaptcha_key,
               capmonster_key,
               twocaptcha_key,
               solvecaptcha_key,
+              ezcaptcha_key,
           ):
               if value:
                   print(f"::add-mask::{value}")
@@ -237,6 +247,8 @@ jobs:
               raise SystemExit("2Captcha 模式需要仓库 Secret 或手动输入密钥")
           if solver == "solvecaptcha" and not solvecaptcha_key:
               raise SystemExit("SolveCaptcha 模式需要仓库 Secret 或手动输入密钥")
+          if solver == "ezcaptcha" and not ezcaptcha_key:
+              raise SystemExit("EzCaptcha 模式需要仓库 Secret 或手动输入密钥")
           if network == "proxy":
               root = Path.cwd().resolve()
               proxy_path = (root / os.environ["PROXY_FILE"]).resolve()
@@ -568,13 +580,14 @@ jobs:
           fi
 
       - name: 隐藏打码平台密钥
-        if: needs.prepare.outputs.solver == 'yescaptcha' || needs.prepare.outputs.solver == 'capmonster' || needs.prepare.outputs.solver == 'twocaptcha' || needs.prepare.outputs.solver == 'solvecaptcha'
+        if: needs.prepare.outputs.solver == 'yescaptcha' || needs.prepare.outputs.solver == 'capmonster' || needs.prepare.outputs.solver == 'twocaptcha' || needs.prepare.outputs.solver == 'solvecaptcha' || needs.prepare.outputs.solver == 'ezcaptcha'
         env:
           SOLVER_MODE: ${{ needs.prepare.outputs.solver }}
           YESCAPTCHA_API_KEY: ${{ secrets.YESCAPTCHA_API_KEY || inputs.yescaptcha_key }}
           CAPMONSTER_API_KEY: ${{ secrets.CAPMONSTER_API_KEY || inputs.capmonster_key }}
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY || inputs.twocaptcha_key }}
           SOLVECAPTCHA_API_KEY: ${{ secrets.SOLVECAPTCHA_API_KEY || inputs.solvecaptcha_key }}
+          EZCAPTCHA_API_KEY: ${{ secrets.EZCAPTCHA_API_KEY || inputs.ezcaptcha_key }}
         run: |
           set -euo pipefail
           if [ "$SOLVER_MODE" = "yescaptcha" ]; then
@@ -583,8 +596,10 @@ jobs:
             provider_key="$CAPMONSTER_API_KEY"
           elif [ "$SOLVER_MODE" = "twocaptcha" ]; then
             provider_key="$TWOCAPTCHA_API_KEY"
-          else
+          elif [ "$SOLVER_MODE" = "solvecaptcha" ]; then
             provider_key="$SOLVECAPTCHA_API_KEY"
+          else
+            provider_key="$EZCAPTCHA_API_KEY"
           fi
           test -n "$provider_key"
           echo "::add-mask::$provider_key"
@@ -619,6 +634,7 @@ jobs:
           CAPMONSTER_API_KEY: ${{ secrets.CAPMONSTER_API_KEY || inputs.capmonster_key }}
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY || inputs.twocaptcha_key }}
           SOLVECAPTCHA_API_KEY: ${{ secrets.SOLVECAPTCHA_API_KEY || inputs.solvecaptcha_key }}
+          EZCAPTCHA_API_KEY: ${{ secrets.EZCAPTCHA_API_KEY || inputs.ezcaptcha_key }}
           V6_CAPMONSTER_PROXY_MODE: ${{ needs.prepare.outputs.capmonster_proxy_mode }}
           V6_STATIC_CACHE_DIR: ${{ github.workspace }}/.cache/v5_public_static
           V6_EMAIL_BROWSER_CACHE_DIR: ${{ github.workspace }}/.cache/v5_email_browser_profile

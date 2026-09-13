@@ -48,6 +48,8 @@ def _map_v6_environment() -> None:
         os.environ["TWOCAPTCHA_API_KEY"] = os.environ["V6_TWOCAPTCHA_API_KEY"]
     if "V6_SOLVECAPTCHA_API_KEY" in os.environ:
         os.environ["SOLVECAPTCHA_API_KEY"] = os.environ["V6_SOLVECAPTCHA_API_KEY"]
+    if "V6_EZCAPTCHA_API_KEY" in os.environ:
+        os.environ["EZCAPTCHA_API_KEY"] = os.environ["V6_EZCAPTCHA_API_KEY"]
 
 
 def _setup_v6_logging(path: Path) -> None:

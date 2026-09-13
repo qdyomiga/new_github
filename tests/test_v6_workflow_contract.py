@@ -70,6 +70,20 @@ def test_v6_workflow_exposes_solvecaptcha_secret_and_solver_choice() -> None:
     assert '"SolveCaptcha": "solvecaptcha"' in text
 
 
+def test_v6_workflow_exposes_ezcaptcha_secret_and_solver_choice() -> None:
+    workflow = yaml.load(
+        WORKFLOW.read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    inputs = workflow["on"]["workflow_dispatch"]["inputs"]
+
+    assert "ezcaptcha_key" in inputs
+    assert "EzCaptcha" in inputs["solver"]["options"]
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "EZCAPTCHA_API_KEY" in text
+    assert '"EzCaptcha": "ezcaptcha"' in text
+
+
 def test_v6_workflow_retains_unique_matrix_allocation_and_serial_pool_runs() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
